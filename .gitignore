@@ -1,0 +1,16 @@
+.dart_tool/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+.idea/
+*.iml
+*.ipr
+*.iws
+android/.gradle/
+android/local.properties
+backend/__pycache__/
+__pycache__/
+*.pyc
+.DS_Store
