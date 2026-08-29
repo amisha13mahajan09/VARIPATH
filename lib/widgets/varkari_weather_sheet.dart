@@ -49,7 +49,6 @@ class _VarkariWeatherSheetState extends State<VarkariWeatherSheet>
     with SingleTickerProviderStateMixin {
   static const Color orange = Color(0xFFD8620F);
   static const Color blue = Color(0xFF2D4678);
-  static const Color successGreen = Color(0xFF2E7D32);
   static const Color cardBg = Color(0xFFFFFBF7);
 
   late TabController _tabController;

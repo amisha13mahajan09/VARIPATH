@@ -18,7 +18,7 @@ DB_CONFIG = {
     "port": 5432,
     "database": "varipath",
     "user": "postgres",
-    "password": "139Virgo"
+    "password": "12345"
 }
 
 
@@ -74,7 +74,17 @@ def init_db():
         """)
 
         cursor.execute("""
+            ALTER TABLE users
+            ALTER COLUMN username TYPE VARCHAR(50),
+            ALTER COLUMN blood_group TYPE VARCHAR(10),
+            ALTER COLUMN gender TYPE VARCHAR(20),
+            ALTER COLUMN password TYPE VARCHAR(100);
+
             ALTER TABLE assistance_requests
+            ALTER COLUMN request_code TYPE VARCHAR(50),
+            ADD COLUMN IF NOT EXISTS problem_description TEXT,
+            ADD COLUMN IF NOT EXISTS assigned_volunteer_username VARCHAR(50),
+            ADD COLUMN IF NOT EXISTS call_sid VARCHAR(100),
             ADD COLUMN IF NOT EXISTS volunteer_done BOOLEAN DEFAULT FALSE,
             ADD COLUMN IF NOT EXISTS varkari_reached BOOLEAN DEFAULT FALSE,
             ADD COLUMN IF NOT EXISTS declined_volunteers TEXT[] DEFAULT '{}';
@@ -1044,6 +1054,235 @@ def create_assistance_request():
             "success": False,
             "message": "Unable to create SOS request."
         }), 500
+
+
+# ============================================================
+# EXOTEL IVR INCOMING CALL / PASSTHRU WEBHOOK
+# ============================================================
+
+DTMF_CATEGORY_MAP = {
+    "1": "Medical Assist: IVR Emergency Call (DTMF 1)",
+    "2": "Accident Alert: IVR Emergency Call (DTMF 2)",
+    "3": "Other Assistance: IVR Call (DTMF 3 - Route/Water/Lost)",
+}
+
+@app.route("/api/exotel/incoming-call", methods=["GET", "POST"])
+def exotel_incoming_call():
+    """
+    Exotel Passthru / Gather Webhook for IVR Emergency SOS.
+    Parameters handled:
+      - CallSid: Unique call identifier (used for duplicate protection)
+      - CallFrom / From: Caller's phone number
+      - digits / Digits: Selected DTMF digit (1, 2, or 3)
+    """
+    try:
+        # 1. Collect parameters from GET query string, POST form, or JSON
+        params = {}
+        if request.args:
+            params.update(request.args.to_dict())
+        if request.is_json:
+            json_data = request.get_json(silent=True)
+            if json_data and isinstance(json_data, dict):
+                params.update(json_data)
+        elif request.form:
+            params.update(request.form.to_dict())
+
+        # Safe logging for development / debugging
+        print(f"[EXOTEL WEBHOOK] Method: {request.method} | Params: {params}")
+
+        # 2. Extract & normalize CallSid
+        raw_call_sid = params.get("CallSid") or params.get("call_sid") or params.get("callSid") or ""
+        call_sid = str(raw_call_sid).strip()
+
+        # 3. Extract & normalize CallFrom / From
+        raw_call_from = params.get("CallFrom") or params.get("From") or params.get("from") or params.get("callFrom") or ""
+        raw_phone_digits = re.sub(r"\D", "", str(raw_call_from))
+        clean_phone = raw_phone_digits[-10:] if len(raw_phone_digits) >= 10 else ""
+
+        # 4. Extract & normalize digits (strips quotes, spaces)
+        raw_digits = params.get("digits") or params.get("Digits") or ""
+        clean_digits = str(raw_digits).strip().strip("'").strip('"').strip()
+
+        # 5. Validations
+        if not call_sid:
+            return jsonify({
+                "success": False,
+                "message": "CallSid parameter is required."
+            }), 400
+
+        if not clean_phone or len(clean_phone) != 10:
+            return jsonify({
+                "success": False,
+                "message": f"Valid 10-digit caller phone number (CallFrom) is required. Received: '{raw_call_from}'."
+            }), 400
+
+        if clean_digits not in ["1", "2", "3"]:
+            return jsonify({
+                "success": False,
+                "message": f"Invalid or missing DTMF digits: '{clean_digits}'. Accepted values are '1', '2', or '3'."
+            }), 400
+
+        # Map DTMF to emergency category
+        problem_description = DTMF_CATEGORY_MAP.get(clean_digits, "General SOS: IVR Call")
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        # 6. Duplicate Protection: Check if CallSid was already processed
+        cursor.execute(
+            """
+            SELECT id, request_code, problem_description, status, created_at
+            FROM assistance_requests
+            WHERE call_sid = %s
+            LIMIT 1
+            """,
+            (call_sid,)
+        )
+        existing_call = cursor.fetchone()
+        if existing_call:
+            cursor.close()
+            conn.close()
+            print(f"[EXOTEL WEBHOOK] Duplicate CallSid '{call_sid}' already processed (Request Code: {existing_call['request_code']}). Returning 200 OK.")
+            return jsonify({
+                "success": True,
+                "duplicate": True,
+                "request_id": existing_call["id"],
+                "request_code": existing_call["request_code"],
+                "status": existing_call["status"],
+                "message": "CallSid already processed."
+            }), 200
+
+        # 7. User lookup & guest auto-registration
+        cursor.execute(
+            """
+            SELECT username, first_name, last_name, phone, blood_group, health_conditions
+            FROM users
+            WHERE phone = %s AND user_type = 'VK'
+            ORDER BY id ASC
+            LIMIT 1
+            """,
+            (clean_phone,)
+        )
+        user_record = cursor.fetchone()
+
+        if user_record:
+            varkari_username = user_record["username"]
+            varkari_name = f"{user_record.get('first_name', '') or ''} {user_record.get('last_name', '') or ''}".strip() or varkari_username
+        else:
+            # Check if guest user was already created previously for this phone
+            guest_username = f"VK{clean_phone}"
+            cursor.execute(
+                """
+                SELECT username, first_name, last_name
+                FROM users
+                WHERE username = %s
+                LIMIT 1
+                """,
+                (guest_username,)
+            )
+            guest_exists = cursor.fetchone()
+            if not guest_exists:
+                cursor.execute(
+                    """
+                    INSERT INTO users (
+                        username, password, user_type, first_name, last_name,
+                        age, gender, phone, emergency_contact, blood_group, health_conditions, date_of_birth
+                    ) VALUES (
+                        %s, '0000', 'VK', 'IVR Caller', %s,
+                        35, 'Other', %s, %s, 'Unknown', ARRAY['Feature Phone / IVR Caller'], '1990-01-01'
+                    )
+                    """,
+                    (
+                        guest_username,
+                        clean_phone,
+                        clean_phone,
+                        clean_phone
+                    )
+                )
+                conn.commit()
+            varkari_username = guest_username
+            varkari_name = f"IVR Caller {clean_phone}"
+
+        # 8. Location lookup (ONLY genuine existing user location, no fabricated GPS)
+        cursor.execute(
+            """
+            SELECT latitude, longitude
+            FROM user_locations
+            WHERE username = %s
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (varkari_username,)
+        )
+        user_loc = cursor.fetchone()
+
+        latitude = None
+        longitude = None
+        if user_loc and user_loc.get("latitude") is not None and user_loc.get("longitude") is not None:
+            latitude = user_loc["latitude"]
+            longitude = user_loc["longitude"]
+
+        # 9. Generate Request Code (high resolution to ensure uniqueness)
+        request_code = "REQ-EXO-" + datetime.now().strftime("%Y%m%d%H%M%S%f")
+
+        # 10. Create Assistance Request with status = 'PENDING'
+        cursor.execute(
+            """
+            INSERT INTO assistance_requests (
+                request_code,
+                varkari_username,
+                varkari_name,
+                problem_description,
+                latitude,
+                longitude,
+                status,
+                assigned_volunteer_username,
+                call_sid
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s, 'PENDING', NULL, %s
+            )
+            RETURNING id, request_code, created_at
+            """,
+            (
+                request_code,
+                varkari_username,
+                varkari_name,
+                problem_description,
+                latitude,
+                longitude,
+                call_sid
+            )
+        )
+        new_request = cursor.fetchone()
+        conn.commit()
+
+        cursor.close()
+        conn.close()
+
+        print(f"[EXOTEL WEBHOOK] Created SOS request: ID={new_request['id']}, Code={new_request['request_code']}, Phone={clean_phone}, DTMF={clean_digits}")
+
+        return jsonify({
+            "success": True,
+            "request_id": new_request["id"],
+            "request_code": new_request["request_code"],
+            "call_sid": call_sid,
+            "caller_phone": clean_phone,
+            "varkari_username": varkari_username,
+            "problem_description": problem_description,
+            "status": "PENDING",
+            "latitude": latitude,
+            "longitude": longitude,
+            "message": "IVR SOS request created successfully."
+        }), 200
+
+    except Exception as e:
+        print("[EXOTEL WEBHOOK] Error handling incoming call:", e)
+        return jsonify({
+            "success": False,
+            "message": f"Server error processing IVR call: {str(e)}"
+        }), 500
+
+
 # ============================================================
 # AUTO-ESCALATE SOS REQUESTS UNCONFIRMED AFTER 10 MINUTES
 # ============================================================

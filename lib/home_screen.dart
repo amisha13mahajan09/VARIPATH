@@ -63,9 +63,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Timer? _sosPollingTimer;
   String? _lastSosStatus;
 
-  String? _selectedSosCategory;
   String? _selectedSosLabel;
-  String? _selectedSosDescription;
   AudioPlayer? _criticalAlarmPlayer;
 
   // ================================================================
@@ -200,13 +198,6 @@ class _HomeScreenState extends State<HomeScreen> {
         });
       }
     }
-  }
-
-  Future<void> _updateVolunteerLocationOnBackend(
-    double lat,
-    double lng,
-  ) async {
-    _updateUserLocationOnBackend(lat, lng);
   }
 
   Future<void> _updateUserLocationOnBackend(
@@ -810,9 +801,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     setState(() {
       _isSendingSos = true;
-      _selectedSosCategory = category['id'] as String;
       _selectedSosLabel = category['label'] as String;
-      _selectedSosDescription = description.isEmpty ? category['label'] as String : description;
     });
 
     try {

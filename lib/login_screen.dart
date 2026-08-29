@@ -8,7 +8,6 @@ import 'register_screen.dart';
 import 'missing_screen.dart';
 import 'map_screen.dart';
 import 'widgets/language_selection_dialog.dart';
-import 'services/app_language.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
