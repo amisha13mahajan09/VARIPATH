@@ -1204,21 +1204,28 @@ def exotel_incoming_call():
             }), 200
 
         # 7. User lookup & guest auto-registration
+        # Check both registered phone AND emergency_contact number (normalized to 10 digits)
         cursor.execute(
             """
-            SELECT username, first_name, last_name, phone, blood_group, health_conditions
+            SELECT username, first_name, last_name, phone, emergency_contact, blood_group, health_conditions
             FROM users
-            WHERE phone = %s AND user_type = 'VK'
-            ORDER BY id ASC
+            WHERE (
+                RIGHT(REGEXP_REPLACE(phone, '[^0-9]', '', 'g'), 10) = %s
+                OR RIGHT(REGEXP_REPLACE(emergency_contact, '[^0-9]', '', 'g'), 10) = %s
+            )
+            AND user_type = 'VK'
+            AND first_name != 'IVR Caller'
+            ORDER BY id DESC
             LIMIT 1
             """,
-            (clean_phone,)
+            (clean_phone, clean_phone)
         )
         user_record = cursor.fetchone()
 
         if user_record:
             varkari_username = user_record["username"]
             varkari_name = f"{user_record.get('first_name', '') or ''} {user_record.get('last_name', '') or ''}".strip() or varkari_username
+            print(f"[EXOTEL WEBHOOK] Identified registered app user: {varkari_username} ({varkari_name}) for incoming phone {clean_phone}")
         else:
             # Check if guest user was already created previously for this phone
             guest_username = f"VK{clean_phone}"
@@ -1253,6 +1260,7 @@ def exotel_incoming_call():
                 conn.commit()
             varkari_username = guest_username
             varkari_name = f"IVR Caller {clean_phone}"
+            user_record = None  # Guest/unknown caller
 
         # 8. Location Resolution & Routing Logic:
         # -------------------------------------------------------------
