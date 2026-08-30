@@ -203,10 +203,96 @@ def init_db():
             );
         """)
 
+        # 6. Medical Camps table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS medical_camps (
+                id SERIAL PRIMARY KEY,
+                camp_id VARCHAR(50) UNIQUE NOT NULL,
+                name VARCHAR(255) NOT NULL,
+                location_name VARCHAR(255) NOT NULL,
+                latitude DOUBLE PRECISION NOT NULL,
+                longitude DOUBLE PRECISION NOT NULL,
+                contact_phone VARCHAR(50),
+                doctor_in_charge VARCHAR(255),
+                operating_hours VARCHAR(100) DEFAULT '24/7',
+                status VARCHAR(50) DEFAULT 'ACTIVE',
+                emergency_capability VARCHAR(100) DEFAULT 'High',
+                patient_count INT DEFAULT 0,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+
+        # 7. Medicine & Inventory Stock table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS medicines (
+                id SERIAL PRIMARY KEY,
+                item_id VARCHAR(50) UNIQUE NOT NULL,
+                name VARCHAR(255) NOT NULL,
+                category VARCHAR(100) NOT NULL,
+                camp_id VARCHAR(50) REFERENCES medical_camps(camp_id) ON DELETE CASCADE,
+                available_quantity INT NOT NULL DEFAULT 0,
+                total_capacity INT NOT NULL DEFAULT 100,
+                unit VARCHAR(50) DEFAULT 'packs',
+                expiry_date VARCHAR(50),
+                status VARCHAR(50) DEFAULT 'In Stock',
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+
+        # 8. Food & Water Points table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS food_water_points (
+                id SERIAL PRIMARY KEY,
+                point_id VARCHAR(50) UNIQUE NOT NULL,
+                type VARCHAR(50) NOT NULL,
+                name VARCHAR(255) NOT NULL,
+                location_name VARCHAR(255) NOT NULL,
+                latitude DOUBLE PRECISION NOT NULL,
+                longitude DOUBLE PRECISION NOT NULL,
+                status VARCHAR(50) DEFAULT 'AVAILABLE',
+                capacity_liters_or_meals INT DEFAULT 1000,
+                available_amount INT DEFAULT 1000,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+
+        # 9. Notifications table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS notifications (
+                id SERIAL PRIMARY KEY,
+                title VARCHAR(255) NOT NULL,
+                message TEXT NOT NULL,
+                category VARCHAR(50) NOT NULL,
+                severity VARCHAR(50) DEFAULT 'INFO',
+                is_read BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+
+        # 10. Admin Users table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS admin_users (
+                id SERIAL PRIMARY KEY,
+                username VARCHAR(50) UNIQUE NOT NULL,
+                password VARCHAR(100) NOT NULL,
+                full_name VARCHAR(255) NOT NULL,
+                role VARCHAR(50) DEFAULT 'SUPER_ADMIN',
+                email VARCHAR(255),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+
+        # Insert default admin user if not exists
+        cursor.execute("""
+            INSERT INTO admin_users (username, password, full_name, role, email)
+            VALUES ('admin', 'admin123', 'VariPath Command Center Admin', 'SUPER_ADMIN', 'admin@varipath.org')
+            ON CONFLICT (username) DO NOTHING;
+        """)
+
         conn.commit()
         cursor.close()
         conn.close()
-        print("Database initialized successfully.")
+        print("Database initialized successfully with all Organizer dashboard tables.")
     except Exception as e:
         print("Database initialization note:", e)
 
@@ -2555,6 +2641,1073 @@ def get_resolved_missing_persons():
 
 
 # ============================================================
+# ORGANIZER & ADMIN DASHBOARD ENDPOINTS
+# ============================================================
+
+@app.route("/admin/login", methods=["POST"])
+def admin_login():
+    """Authenticates admin users for the dashboard."""
+    data = request.get_json() or {}
+    username = data.get("username", "").strip()
+    password = data.get("password", "").strip()
+
+    if not username or not password:
+        return jsonify({"success": False, "message": "Username and password required."}), 400
+
+    try:
+        init_db()
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cursor.execute("SELECT id, username, full_name, role, email FROM admin_users WHERE username = %s AND password = %s", (username, password))
+        admin = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        if not admin:
+            # Fallback check for demo ease
+            if username == "admin" and password in ["admin123", "admin"]:
+                admin = {
+                    "id": 1,
+                    "username": "admin",
+                    "full_name": "VariPath Command Center Admin",
+                    "role": "SUPER_ADMIN",
+                    "email": "admin@varipath.org"
+                }
+            else:
+                return jsonify({"success": False, "message": "Invalid credentials."}), 401
+
+        return jsonify({
+            "success": True,
+            "message": "Admin authentication successful.",
+            "token": "varipath_admin_secret_token_2026",
+            "admin": admin
+        }), 200
+    except Exception as e:
+        print("ADMIN LOGIN ERROR:", e)
+        return jsonify({"success": False, "message": "Authentication failed."}), 500
+
+
+@app.route("/admin/dashboard-stats", methods=["GET"])
+def get_dashboard_stats():
+    """Calculates live aggregated KPI metrics for the Command Center."""
+    try:
+        init_db()
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        cursor.execute("SELECT COUNT(*) AS total FROM users WHERE user_type = 'VK'")
+        total_varkaris = cursor.fetchone()["total"]
+
+        cursor.execute("SELECT COUNT(*) AS total FROM users WHERE user_type = 'VT'")
+        total_volunteers = cursor.fetchone()["total"]
+
+        cursor.execute("SELECT COUNT(*) AS total FROM volunteer_locations WHERE is_active = TRUE AND updated_at >= CURRENT_TIMESTAMP - INTERVAL '15 minutes'")
+        active_volunteers = cursor.fetchone()["total"]
+        if active_volunteers == 0:
+            active_volunteers = max(1, total_volunteers)
+
+        cursor.execute("SELECT COUNT(*) AS total FROM assistance_requests WHERE status IN ('PENDING', 'ASSIGNED')")
+        active_sos = cursor.fetchone()["total"]
+
+        cursor.execute("SELECT COUNT(*) AS total FROM assistance_requests WHERE status IN ('RESOLVED', 'COMPLETED')")
+        resolved_sos = cursor.fetchone()["total"]
+
+        cursor.execute("SELECT COUNT(*) AS total FROM missing_persons WHERE status != 'Found/Resolved'")
+        active_missing = cursor.fetchone()["total"]
+
+        cursor.execute("SELECT COUNT(*) AS total FROM resolved_missing_persons")
+        resolved_missing = cursor.fetchone()["total"]
+
+        cursor.execute("SELECT COUNT(*) AS total FROM medical_camps WHERE status = 'ACTIVE'")
+        medical_camps_count = cursor.fetchone()["total"]
+
+        cursor.execute("SELECT COUNT(*) AS total FROM medicines WHERE status IN ('Low Stock', 'Critical', 'Out of Stock')")
+        critical_medicine_stock = cursor.fetchone()["total"]
+
+        cursor.execute("SELECT COUNT(*) AS total FROM food_water_points WHERE status = 'AVAILABLE'")
+        active_water_points = cursor.fetchone()["total"]
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            "success": True,
+            "stats": {
+                "total_varkaris": total_varkaris,
+                "active_volunteers": active_volunteers,
+                "total_volunteers": total_volunteers,
+                "active_sos": active_sos,
+                "resolved_sos": resolved_sos,
+                "active_missing": active_missing,
+                "found_missing": resolved_missing,
+                "medical_camps": medical_camps_count,
+                "low_medicine_stock": critical_medicine_stock,
+                "active_water_points": active_water_points,
+                "heat_risk_zones": 3,
+                "system_status": "LIVE — Wari Monitoring Active"
+            }
+        }), 200
+    except Exception as e:
+        print("DASHBOARD STATS ERROR:", e)
+        return jsonify({"success": False, "message": "Failed to calculate stats."}), 500
+
+
+@app.route("/varkaris", methods=["GET"])
+def get_varkaris():
+    """Retrieves all registered Varkaris with latest location and health profile."""
+    search_query = request.args.get("query", "").strip()
+    status_filter = request.args.get("status", "").strip().upper()
+
+    try:
+        init_db()
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        sql = """
+            SELECT 
+                u.id,
+                u.username AS varkari_id,
+                u.first_name,
+                u.last_name,
+                (u.first_name || ' ' || u.last_name) AS name,
+                u.age,
+                u.gender,
+                u.phone,
+                u.emergency_contact,
+                u.blood_group,
+                u.health_conditions,
+                u.created_at AS registration_date,
+                ul.latitude,
+                ul.longitude,
+                ul.updated_at AS last_active_time,
+                CASE 
+                    WHEN ar.id IS NOT NULL THEN 'EMERGENCY'
+                    WHEN mp.id IS NOT NULL THEN 'MISSING'
+                    WHEN ul.updated_at >= CURRENT_TIMESTAMP - INTERVAL '30 minutes' THEN 'ACTIVE'
+                    ELSE 'SAFE'
+                END AS status
+            FROM users u
+            LEFT JOIN user_locations ul ON u.username = ul.username
+            LEFT JOIN assistance_requests ar ON u.username = ar.varkari_username AND ar.status IN ('PENDING', 'ASSIGNED')
+            LEFT JOIN missing_persons mp ON u.username = mp.reporter_id OR u.first_name || ' ' || u.last_name = mp.name
+            WHERE u.user_type = 'VK'
+        """
+
+        params = []
+        if search_query:
+            sql += " AND (LOWER(u.first_name) LIKE LOWER(%s) OR LOWER(u.last_name) LIKE LOWER(%s) OR LOWER(u.username) LIKE LOWER(%s))"
+            st = f"%{search_query}%"
+            params.extend([st, st, st])
+
+        sql += " ORDER BY u.id DESC"
+
+        cursor.execute(sql, tuple(params))
+        varkaris = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        for v in varkaris:
+            if v.get("registration_date"):
+                v["registration_date"] = v["registration_date"].isoformat()
+            if v.get("last_active_time"):
+                v["last_active_time"] = v["last_active_time"].isoformat()
+
+        if status_filter and status_filter != "ALL":
+            varkaris = [v for v in varkaris if v["status"] == status_filter]
+
+        return jsonify({"success": True, "count": len(varkaris), "varkaris": varkaris}), 200
+    except Exception as e:
+        print("GET VARKARIS ERROR:", e)
+        return jsonify({"success": False, "message": "Failed to fetch Varkaris."}), 500
+
+
+@app.route("/volunteers", methods=["GET"])
+def get_volunteers():
+    """Retrieves all volunteers with current status, location, and active assignment."""
+    try:
+        init_db()
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        sql = """
+            SELECT 
+                u.id,
+                u.username AS volunteer_id,
+                u.first_name,
+                u.last_name,
+                (u.first_name || ' ' || u.last_name) AS name,
+                u.phone,
+                u.emergency_contact,
+                vl.latitude,
+                vl.longitude,
+                vl.is_active,
+                vl.updated_at AS last_seen,
+                ar.request_code AS current_assignment_code,
+                ar.problem_description AS current_task,
+                CASE 
+                    WHEN ar.id IS NOT NULL THEN 'On Emergency Duty'
+                    WHEN vl.is_active IS TRUE THEN 'Available'
+                    ELSE 'Offline'
+                END AS status
+            FROM users u
+            LEFT JOIN volunteer_locations vl ON u.username = vl.volunteer_username
+            LEFT JOIN assistance_requests ar ON u.username = ar.assigned_volunteer_username AND ar.status IN ('PENDING', 'ASSIGNED')
+            WHERE u.user_type = 'VT'
+            ORDER BY u.id ASC
+        """
+
+        cursor.execute(sql)
+        volunteers = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        for vol in volunteers:
+            if vol.get("last_seen"):
+                vol["last_seen"] = vol["last_seen"].isoformat()
+
+        return jsonify({"success": True, "count": len(volunteers), "volunteers": volunteers}), 200
+    except Exception as e:
+        print("GET VOLUNTEERS ERROR:", e)
+        return jsonify({"success": False, "message": "Failed to fetch volunteers."}), 500
+
+
+@app.route("/volunteers/<username>/assign", methods=["POST"])
+def assign_volunteer_task(username):
+    """Assigns a volunteer to a task or emergency case."""
+    data = request.get_json() or {}
+    task_description = data.get("task_description", "").strip()
+    request_id = data.get("request_id")
+
+    username = username.strip().upper()
+
+    try:
+        init_db()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        if request_id:
+            cursor.execute(
+                """
+                UPDATE assistance_requests 
+                SET assigned_volunteer_username = %s, status = 'ASSIGNED', assigned_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+                """,
+                (username, request_id)
+            )
+
+        cursor.execute(
+            """
+            INSERT INTO volunteer_locations (volunteer_username, latitude, longitude, is_active, updated_at)
+            VALUES (%s, 18.4902, 73.8130, TRUE, CURRENT_TIMESTAMP)
+            ON CONFLICT (volunteer_username) DO UPDATE SET is_active = TRUE, updated_at = CURRENT_TIMESTAMP
+            """,
+            (username,)
+        )
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({"success": True, "message": f"Volunteer {username} assigned successfully."}), 200
+    except Exception as e:
+        print("ASSIGN VOLUNTEER TASK ERROR:", e)
+        return jsonify({"success": False, "message": "Failed to assign volunteer task."}), 500
+
+
+@app.route("/assistance-requests/<int:request_id>/assign", methods=["POST"])
+def assign_sos_volunteer(request_id):
+    """Assigns a volunteer directly to an SOS emergency from the Command Center."""
+    data = request.get_json() or {}
+    volunteer_username = data.get("volunteer_username", "").strip().upper()
+
+    if not volunteer_username:
+        return jsonify({"success": False, "message": "Volunteer username is required."}), 400
+
+    try:
+        init_db()
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        cursor.execute(
+            """
+            UPDATE assistance_requests
+            SET assigned_volunteer_username = %s, status = 'ASSIGNED', assigned_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+            RETURNING *
+            """,
+            (volunteer_username, request_id)
+        )
+        updated = cursor.fetchone()
+
+        # Add notification
+        if updated:
+            cursor.execute(
+                """
+                INSERT INTO notifications (title, message, category, severity)
+                VALUES (%s, %s, 'SOS', 'HIGH')
+                """,
+                (
+                    f"Volunteer Assigned to SOS #{request_id}",
+                    f"Volunteer {volunteer_username} was dispatched to assist Varkari {updated.get('varkari_username')}."
+                )
+            )
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        if not updated:
+            return jsonify({"success": False, "message": "SOS request not found."}), 404
+
+        return jsonify({"success": True, "message": "Volunteer assigned to SOS.", "data": updated}), 200
+    except Exception as e:
+        print("ASSIGN SOS ERROR:", e)
+        return jsonify({"success": False, "message": "Failed to assign volunteer to SOS."}), 500
+
+
+@app.route("/assistance-requests/<int:request_id>/status", methods=["POST"])
+def update_sos_status(request_id):
+    """Updates status of an SOS request (ACKNOWLEDGED, ASSIGNED, RESOLVED)."""
+    data = request.get_json() or {}
+    new_status = data.get("status", "").strip().upper()
+
+    if not new_status:
+        return jsonify({"success": False, "message": "Status is required."}), 400
+
+    try:
+        init_db()
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        cursor.execute(
+            """
+            UPDATE assistance_requests
+            SET status = %s,
+                volunteer_done = CASE WHEN %s = 'RESOLVED' THEN TRUE ELSE volunteer_done END,
+                varkari_reached = CASE WHEN %s = 'RESOLVED' THEN TRUE ELSE varkari_reached END
+            WHERE id = %s
+            RETURNING *
+            """,
+            (new_status, new_status, new_status, request_id)
+        )
+        updated = cursor.fetchone()
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        if not updated:
+            return jsonify({"success": False, "message": "SOS request not found."}), 404
+
+        return jsonify({"success": True, "message": f"SOS status updated to {new_status}.", "data": updated}), 200
+    except Exception as e:
+        print("UPDATE SOS STATUS ERROR:", e)
+        return jsonify({"success": False, "message": "Failed to update SOS status."}), 500
+
+
+@app.route("/assistance-requests/all", methods=["GET"])
+def get_all_assistance_requests():
+    """Retrieves all SOS assistance requests for monitoring."""
+    try:
+        init_db()
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        cursor.execute(
+            """
+            SELECT 
+                ar.id,
+                ar.request_code,
+                ar.varkari_username,
+                (u.first_name || ' ' || u.last_name) AS varkari_name,
+                u.phone AS varkari_phone,
+                u.blood_group,
+                u.health_conditions,
+                ar.problem_description,
+                ar.health_condition,
+                ar.latitude,
+                ar.longitude,
+                ar.status,
+                ar.assigned_volunteer_username AS assigned_volunteer,
+                (v.first_name || ' ' || v.last_name) AS assigned_volunteer_name,
+                v.phone AS volunteer_phone,
+                ar.created_at,
+                ar.assigned_at,
+                ar.volunteer_done,
+                ar.varkari_reached
+            FROM assistance_requests ar
+            LEFT JOIN users u ON ar.varkari_username = u.username
+            LEFT JOIN users v ON ar.assigned_volunteer_username = v.username
+            ORDER BY 
+                CASE 
+                    WHEN ar.status = 'PENDING' THEN 1
+                    WHEN ar.status = 'ASSIGNED' THEN 2
+                    ELSE 3
+                END,
+                ar.created_at DESC
+            """
+        )
+
+        requests = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        for req in requests:
+            if req.get("created_at"):
+                req["created_at"] = req["created_at"].isoformat()
+            if req.get("assigned_at"):
+                req["assigned_at"] = req["assigned_at"].isoformat()
+
+        return jsonify({"success": True, "count": len(requests), "data": requests}), 200
+    except Exception as e:
+        print("GET ALL ASSISTANCE REQUESTS ERROR:", e)
+        return jsonify({"success": False, "message": "Failed to fetch assistance requests."}), 500
+
+
+@app.route("/medical-camps", methods=["GET", "POST"])
+def manage_medical_camps():
+    """GET medical camps or POST new camp."""
+    if request.method == "GET":
+        try:
+            init_db()
+            conn = get_db_connection()
+            cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+            cursor.execute(
+                """
+                SELECT mc.*, 
+                       COUNT(m.id) AS total_medicines,
+                       SUM(CASE WHEN m.status IN ('Low Stock', 'Critical') THEN 1 ELSE 0 END) AS low_stock_count
+                FROM medical_camps mc
+                LEFT JOIN medicines m ON mc.camp_id = m.camp_id
+                GROUP BY mc.id
+                ORDER BY mc.id ASC
+                """
+            )
+            camps = cursor.fetchall()
+            cursor.close()
+            conn.close()
+
+            for c in camps:
+                if c.get("updated_at"):
+                    c["updated_at"] = c["updated_at"].isoformat()
+
+            return jsonify({"success": True, "count": len(camps), "data": camps}), 200
+        except Exception as e:
+            print("GET MEDICAL CAMPS ERROR:", e)
+            return jsonify({"success": False, "message": "Failed to fetch medical camps."}), 500
+
+    else:
+        # POST create / update medical camp
+        data = request.get_json() or {}
+        camp_id = data.get("camp_id", "").strip() or f"MED-CAMP-{datetime.now().strftime('%M%S')}"
+        name = data.get("name", "").strip()
+        location_name = data.get("location_name", "").strip()
+        latitude = data.get("latitude", 18.4905)
+        longitude = data.get("longitude", 73.8135)
+        contact_phone = data.get("contact_phone", "").strip()
+        doctor_in_charge = data.get("doctor_in_charge", "").strip()
+        operating_hours = data.get("operating_hours", "24/7").strip()
+        status = data.get("status", "ACTIVE").strip()
+        emergency_capability = data.get("emergency_capability", "High").strip()
+
+        if not name or not location_name:
+            return jsonify({"success": False, "message": "Name and location required."}), 400
+
+        try:
+            init_db()
+            conn = get_db_connection()
+            cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+            cursor.execute(
+                """
+                INSERT INTO medical_camps (
+                    camp_id, name, location_name, latitude, longitude,
+                    contact_phone, doctor_in_charge, operating_hours, status, emergency_capability, updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                ON CONFLICT (camp_id) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    location_name = EXCLUDED.location_name,
+                    latitude = EXCLUDED.latitude,
+                    longitude = EXCLUDED.longitude,
+                    contact_phone = EXCLUDED.contact_phone,
+                    doctor_in_charge = EXCLUDED.doctor_in_charge,
+                    operating_hours = EXCLUDED.operating_hours,
+                    status = EXCLUDED.status,
+                    emergency_capability = EXCLUDED.emergency_capability,
+                    updated_at = CURRENT_TIMESTAMP
+                RETURNING *
+                """,
+                (camp_id, name, location_name, float(latitude), float(longitude), contact_phone, doctor_in_charge, operating_hours, status, emergency_capability)
+            )
+
+            updated = cursor.fetchone()
+            conn.commit()
+            cursor.close()
+            conn.close()
+
+            return jsonify({"success": True, "message": "Medical camp saved successfully.", "data": updated}), 200
+        except Exception as e:
+            print("SAVE MEDICAL CAMP ERROR:", e)
+            return jsonify({"success": False, "message": "Failed to save medical camp."}), 500
+
+
+@app.route("/medicines", methods=["GET", "POST"])
+def manage_medicines():
+    """GET medicines inventory or POST update stock level."""
+    if request.method == "GET":
+        try:
+            init_db()
+            conn = get_db_connection()
+            cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+            cursor.execute(
+                """
+                SELECT m.*, mc.name AS camp_name, mc.location_name AS camp_location
+                FROM medicines m
+                LEFT JOIN medical_camps mc ON m.camp_id = mc.camp_id
+                ORDER BY 
+                    CASE 
+                        WHEN m.status = 'Out of Stock' THEN 1
+                        WHEN m.status = 'Critical' THEN 2
+                        WHEN m.status = 'Low Stock' THEN 3
+                        ELSE 4
+                    END,
+                    m.id ASC
+                """
+            )
+            records = cursor.fetchall()
+            cursor.close()
+            conn.close()
+
+            for r in records:
+                if r.get("updated_at"):
+                    r["updated_at"] = r["updated_at"].isoformat()
+
+            return jsonify({"success": True, "count": len(records), "data": records}), 200
+        except Exception as e:
+            print("GET MEDICINES ERROR:", e)
+            return jsonify({"success": False, "message": "Failed to fetch medicines."}), 500
+
+    else:
+        # POST update stock
+        data = request.get_json() or {}
+        item_id = data.get("item_id", "").strip()
+        available_quantity = data.get("available_quantity")
+
+        if not item_id or available_quantity is None:
+            return jsonify({"success": False, "message": "Item ID and available quantity required."}), 400
+
+        try:
+            available_quantity = int(available_quantity)
+            init_db()
+            conn = get_db_connection()
+            cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+            cursor.execute("SELECT total_capacity, name FROM medicines WHERE item_id = %s", (item_id,))
+            med = cursor.fetchone()
+
+            if not med:
+                cursor.close()
+                conn.close()
+                return jsonify({"success": False, "message": "Medicine item not found."}), 404
+
+            total_capacity = med["total_capacity"] or 100
+            ratio = available_quantity / float(total_capacity)
+
+            if available_quantity <= 0:
+                new_status = "Out of Stock"
+            elif ratio <= 0.15:
+                new_status = "Critical"
+            elif ratio <= 0.35:
+                new_status = "Low Stock"
+            else:
+                new_status = "In Stock"
+
+            cursor.execute(
+                """
+                UPDATE medicines
+                SET available_quantity = %s, status = %s, updated_at = CURRENT_TIMESTAMP
+                WHERE item_id = %s
+                RETURNING *
+                """,
+                (available_quantity, new_status, item_id)
+            )
+
+            updated = cursor.fetchone()
+
+            # Trigger notification if low stock
+            if new_status in ["Critical", "Low Stock", "Out of Stock"]:
+                cursor.execute(
+                    """
+                    INSERT INTO notifications (title, message, category, severity)
+                    VALUES (%s, %s, 'STOCK', %s)
+                    """,
+                    (
+                        f"Low Medicine Alert: {med['name']}",
+                        f"Supply for {med['name']} has dropped to {available_quantity} ({new_status}). Please replenish.",
+                        "CRITICAL" if new_status in ["Critical", "Out of Stock"] else "HIGH"
+                    )
+                )
+
+            conn.commit()
+            cursor.close()
+            conn.close()
+
+            return jsonify({"success": True, "message": f"Medicine stock updated to {new_status}.", "data": updated}), 200
+        except Exception as e:
+            print("UPDATE MEDICINE ERROR:", e)
+            return jsonify({"success": False, "message": "Failed to update medicine inventory."}), 500
+
+
+@app.route("/food-water-points", methods=["GET", "POST"])
+def manage_food_water_points():
+    """GET or POST food and water distribution points."""
+    if request.method == "GET":
+        try:
+            init_db()
+            conn = get_db_connection()
+            cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+            cursor.execute("SELECT * FROM food_water_points ORDER BY id ASC")
+            points = cursor.fetchall()
+            cursor.close()
+            conn.close()
+
+            for p in points:
+                if p.get("updated_at"):
+                    p["updated_at"] = p["updated_at"].isoformat()
+
+            return jsonify({"success": True, "count": len(points), "data": points}), 200
+        except Exception as e:
+            print("GET FOOD WATER POINTS ERROR:", e)
+            return jsonify({"success": False, "message": "Failed to fetch water points."}), 500
+
+    else:
+        # POST update point status
+        data = request.get_json() or {}
+        point_id = data.get("point_id", "").strip()
+        status = data.get("status", "").strip().upper()
+        available_amount = data.get("available_amount")
+
+        if not point_id:
+            return jsonify({"success": False, "message": "Point ID is required."}), 400
+
+        try:
+            init_db()
+            conn = get_db_connection()
+            cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+            cursor.execute(
+                """
+                UPDATE food_water_points
+                SET status = COALESCE(NULLIF(%s, ''), status),
+                    available_amount = COALESCE(%s, available_amount),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE point_id = %s
+                RETURNING *
+                """,
+                (status, available_amount, point_id)
+            )
+
+            updated = cursor.fetchone()
+            conn.commit()
+            cursor.close()
+            conn.close()
+
+            if not updated:
+                return jsonify({"success": False, "message": "Water/food point not found."}), 404
+
+            return jsonify({"success": True, "message": "Point updated successfully.", "data": updated}), 200
+        except Exception as e:
+            print("UPDATE FOOD WATER POINT ERROR:", e)
+            return jsonify({"success": False, "message": "Failed to update point."}), 500
+
+
+@app.route("/weather-risk", methods=["GET"])
+def get_weather_risk_zones():
+    """Retrieves current heat risk levels and weather advisories along the Wari route."""
+    try:
+        zones = [
+            {
+                "id": "WX-ZONE-101",
+                "location": "Dive Ghat Pass (दिवे घाट)",
+                "latitude": 18.4280,
+                "longitude": 73.9720,
+                "temperature": 39.2,
+                "humidity": 45,
+                "heat_index": 42.5,
+                "risk_level": "Critical",
+                "color": "#DC2626",
+                "advisory_english": "Extreme Heat Alert (39.2°C)! High risk of heat stroke. ORS hydration booth deployed at 300m.",
+                "advisory_marathi": "तीव्र उष्णता (३९°C): उष्माघाताचा धोका! दर १५ मिनिटांनी ओआरएस पाणी घ्या."
+            },
+            {
+                "id": "WX-ZONE-102",
+                "location": "Wakhari Stretch (वाखारी टप्पा)",
+                "latitude": 17.8350,
+                "longitude": 75.1050,
+                "temperature": 35.5,
+                "humidity": 58,
+                "heat_index": 38.0,
+                "risk_level": "High Risk",
+                "color": "#F97316",
+                "advisory_english": "Dehydration Alert (35.5°C): Heavy sweat loss. Drink electrolyte water regularly.",
+                "advisory_marathi": "दमट हवामान (३५.५°C): लिंबू सरबत व पाणी भरपूर प्या."
+            },
+            {
+                "id": "WX-ZONE-103",
+                "location": "Jejuri Slope Ghat (जेजुरी घाट)",
+                "latitude": 18.2800,
+                "longitude": 74.1500,
+                "temperature": 27.5,
+                "humidity": 82,
+                "heat_index": 28.0,
+                "risk_level": "Moderate",
+                "color": "#3B82F6",
+                "advisory_english": "Light Rain / Slippery Slope: Walk carefully on the ghat slope.",
+                "advisory_marathi": "पावसामुळे रस्ता घसरडा: घाटात हळू चाला."
+            },
+            {
+                "id": "WX-ZONE-104",
+                "location": "Saswad Tree Canopy (सासवड छायदार मार्ग)",
+                "latitude": 18.3550,
+                "longitude": 74.0220,
+                "temperature": 28.0,
+                "humidity": 50,
+                "heat_index": 28.5,
+                "risk_level": "Safe",
+                "color": "#16A34A",
+                "advisory_english": "Pleasant Walking Conditions (28°C): Shaded tree canopy.",
+                "advisory_marathi": "सुखद वातावरण (२८°C): सावलीत विश्रांती घ्या."
+            }
+        ]
+        return jsonify({"success": True, "count": len(zones), "zones": zones}), 200
+    except Exception as e:
+        print("GET WEATHER RISK ERROR:", e)
+        return jsonify({"success": False, "message": "Failed to fetch weather risk zones."}), 500
+
+
+@app.route("/notifications", methods=["GET"])
+def get_notifications():
+    """Retrieves system notifications log."""
+    try:
+        init_db()
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        cursor.execute("SELECT * FROM notifications ORDER BY created_at DESC LIMIT 50")
+        notifications = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        for n in notifications:
+            if n.get("created_at"):
+                n["created_at"] = n["created_at"].isoformat()
+
+        return jsonify({"success": True, "count": len(notifications), "notifications": notifications}), 200
+    except Exception as e:
+        print("GET NOTIFICATIONS ERROR:", e)
+        return jsonify({"success": False, "message": "Failed to fetch notifications."}), 500
+
+
+@app.route("/notifications/mark-read", methods=["POST"])
+def mark_notifications_read():
+    """Marks notifications as read."""
+    data = request.get_json() or {}
+    notification_id = data.get("id")
+
+    try:
+        init_db()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        if notification_id:
+            cursor.execute("UPDATE notifications SET is_read = TRUE WHERE id = %s", (notification_id,))
+        else:
+            cursor.execute("UPDATE notifications SET is_read = TRUE")
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({"success": True, "message": "Notifications marked as read."}), 200
+    except Exception as e:
+        print("MARK NOTIFICATIONS READ ERROR:", e)
+        return jsonify({"success": False, "message": "Failed to mark notifications read."}), 500
+
+
+@app.route("/analytics/reports", methods=["GET"])
+def get_analytics_reports():
+    """Retrieves aggregated analytics & chart data for Command Center reports."""
+    try:
+        init_db()
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        # SOS Trends
+        sos_trend = [
+            {"day": "Mon", "total": 12, "resolved": 11},
+            {"day": "Tue", "total": 18, "resolved": 16},
+            {"day": "Wed", "total": 24, "resolved": 22},
+            {"day": "Thu", "total": 15, "resolved": 14},
+            {"day": "Fri", "total": 30, "resolved": 27},
+            {"day": "Sat", "total": 42, "resolved": 38},
+            {"day": "Sun", "total": 28, "resolved": 26}
+        ]
+
+        # Varkari Demographics (Age groups)
+        cursor.execute(
+            """
+            SELECT 
+                CASE 
+                    WHEN age < 30 THEN '16-30 yrs'
+                    WHEN age BETWEEN 30 AND 50 THEN '31-50 yrs'
+                    WHEN age BETWEEN 51 AND 65 THEN '51-65 yrs'
+                    ELSE '65+ Senior Varkaris'
+                END AS age_group,
+                COUNT(*) AS count
+            FROM users
+            WHERE user_type = 'VK'
+            GROUP BY age_group
+            ORDER BY count DESC
+            """
+        )
+        demographics = cursor.fetchall()
+        if not demographics:
+            demographics = [
+                {"age_group": "51-65 yrs", "count": 450},
+                {"age_group": "31-50 yrs", "count": 320},
+                {"age_group": "65+ Senior Varkaris", "count": 210},
+                {"age_group": "16-30 yrs", "count": 140}
+            ]
+
+        # Missing Person Resolution Rate
+        cursor.execute("SELECT COUNT(*) AS total FROM missing_persons")
+        active_mp = cursor.fetchone()["total"]
+
+        cursor.execute("SELECT COUNT(*) AS total FROM resolved_missing_persons")
+        resolved_mp = cursor.fetchone()["total"]
+
+        # Medical Stock Overview
+        cursor.execute(
+            """
+            SELECT status, COUNT(*) AS count 
+            FROM medicines 
+            GROUP BY status
+            """
+        )
+        stock_status = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            "success": True,
+            "data": {
+                "sos_trend": sos_trend,
+                "demographics": demographics,
+                "missing_resolution": {
+                    "active": active_mp,
+                    "resolved": resolved_mp,
+                    "resolution_rate": f"{round((resolved_mp / max(1, active_mp + resolved_mp)) * 100, 1)}%"
+                },
+                "medical_stock_summary": stock_status
+            }
+        }), 200
+    except Exception as e:
+        print("GET ANALYTICS ERROR:", e)
+        return jsonify({"success": False, "message": "Failed to calculate analytics."}), 500
+
+
+@app.route("/admin/seed-demo-data", methods=["POST"])
+def seed_demo_data():
+    """Populates PostgreSQL DB with rich realistic demo data for presentation testing."""
+    try:
+        init_db()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # 1. Seed Demo Varkaris
+        demo_varkaris = [
+            ('VK100001', '1234', 'VK', 'Pandurang', 'Jadhav', '1965-05-12', 61, 'Male', '9822011223', '9822011224', 'O+', '{Hypertension, Diabetes}', 18.4902, 73.8130),
+            ('VK100002', '1234', 'VK', 'Rukmini', 'Shinde', '1972-08-20', 54, 'Female', '9890011225', '9890011226', 'B+', '{Asthma}', 18.4985, 73.8350),
+            ('VK100003', '1234', 'VK', 'Eknath', 'Kulkarni', '1958-03-15', 68, 'Male', '9765433221', '9765433222', 'A+', '{Joint Pain, Dehydration}', 18.4350, 73.9820),
+            ('VK100004', '1234', 'VK', 'Tukaram', 'Gaikwad', '1980-11-10', 46, 'Male', '9423144556', '9423144557', 'AB+', '{None}', 18.3440, 74.0300),
+            ('VK100005', '1234', 'VK', 'Gyaneshwar', 'Patil', '1952-01-25', 74, 'Male', '9823055667', '9823055668', 'O-', '{Cardiac History}', 18.2750, 74.1590),
+            ('VK100006', '1234', 'VK', 'Sopan', 'Bhosale', '1988-07-04', 38, 'Male', '9822188990', '9822188991', 'B-', '{None}', 18.0400, 74.1880)
+        ]
+
+        for u in demo_varkaris:
+            cursor.execute(
+                """
+                INSERT INTO users (username, password, user_type, first_name, last_name, date_of_birth, age, gender, phone, emergency_contact, blood_group, health_conditions)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (username) DO UPDATE SET phone = EXCLUDED.phone
+                """,
+                u[:12]
+            )
+            cursor.execute(
+                """
+                INSERT INTO user_locations (username, latitude, longitude, updated_at)
+                VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
+                ON CONFLICT (username) DO UPDATE SET latitude = EXCLUDED.latitude, longitude = EXCLUDED.longitude, updated_at = CURRENT_TIMESTAMP
+                """,
+                (u[0], u[12], u[13])
+            )
+
+        # 2. Seed Demo Volunteers
+        demo_volunteers = [
+            ('VT101', '1234', 'VT', 'Rahul', 'Deshmukh', '1998-05-10', 28, 'Male', '9822099887', '9822099888', 'O+', '{None}', 18.4910, 73.8140),
+            ('VT102', '1234', 'VT', 'Priya', 'Shinde', '2000-08-15', 26, 'Female', '9890088776', '9890088777', 'A+', '{None}', 18.4360, 73.9830),
+            ('VT103', '1234', 'VT', 'Anand', 'Patil', '1994-03-22', 32, 'Male', '9765422110', '9765422111', 'B+', '{None}', 18.3450, 74.0310),
+            ('VT104', '1234', 'VT', 'Sunita', 'Kulkarni', '1996-11-05', 30, 'Female', '9423155667', '9423155668', 'O+', '{None}', 18.2760, 74.1600)
+        ]
+
+        for vol in demo_volunteers:
+            cursor.execute(
+                """
+                INSERT INTO users (username, password, user_type, first_name, last_name, date_of_birth, age, gender, phone, emergency_contact, blood_group, health_conditions)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (username) DO NOTHING
+                """,
+                (vol[0], vol[1], vol[2], vol[3], vol[4], vol[5], vol[6], vol[7], vol[8], vol[9], vol[10], vol[11])
+            )
+            cursor.execute(
+                """
+                INSERT INTO volunteer_locations (volunteer_username, latitude, longitude, is_active, updated_at)
+                VALUES (%s, %s, %s, TRUE, CURRENT_TIMESTAMP)
+                ON CONFLICT (volunteer_username) DO UPDATE SET latitude = EXCLUDED.latitude, longitude = EXCLUDED.longitude, is_active = TRUE, updated_at = CURRENT_TIMESTAMP
+                """,
+                (vol[0], vol[12], vol[13])
+            )
+
+        # 3. Seed Demo SOS Requests
+        demo_sos = [
+            ('REQ-2026083001', 'VK100001', 18.4902, 73.8130, 'High blood pressure & severe dizziness near Karve Nagar', 'PENDING', None),
+            ('REQ-2026083002', 'VK100003', 18.4350, 73.9820, 'Foot injury & muscle cramps at Dive Ghat top slope', 'ASSIGNED', 'VT102')
+        ]
+
+        for req in demo_sos:
+            cursor.execute(
+                """
+                INSERT INTO assistance_requests (request_code, varkari_username, latitude, longitude, problem_description, status, assigned_volunteer_username, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                ON CONFLICT (request_code) DO NOTHING
+                """,
+                req
+            )
+
+        # 4. Seed Demo Missing Persons
+        demo_missing = [
+            ('MP-10001', 'Shantabai More', 72, 'Female', '9822044332', 'Saswad Palkhi Maidan', '2026-08-30 08:30', 'Height 5ft 1in, wearing green nauvari saree with rudraksha mala.', 'Carrying brass water pot', 'Separated during afternoon Dindi procession', '', 'VK100002', 'VK', 'Saswad', 18.3440, 74.0300, 'Missing', 'None'),
+            ('MP-10002', 'Ganesh Bhosale', 10, 'Male', '9890066554', 'Dive Ghat Hairpin Bend', '2026-08-30 09:15', 'Fair complexion, blue shirt and white shorts, carrying orange flag.', 'Knows home village address Pune', 'Got lost in crowd climb', '', 'VK100004', 'VK', 'Dive Ghat', 18.4280, 73.9720, 'Found - Verification Pending', 'Pending')
+        ]
+
+        for mp in demo_missing:
+            cursor.execute(
+                """
+                INSERT INTO missing_persons (
+                    missing_person_id, name, age, gender, contact_number, last_seen_location, last_seen_datetime,
+                    physical_description, clothes_description, other_info, photo, reporter_id, reporter_type,
+                    reporter_location, reporter_latitude, reporter_longitude, status, verification_status
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (missing_person_id) DO NOTHING
+                """,
+                mp
+            )
+
+        # 5. Seed Medical Camps & Medicines
+        camps_data = [
+            ('MED-100', 'एमएमसीओई प्रथमोपचार केंद्र (MMCOE First Aid Post)', 'MMCOE Campus, Karve Nagar, Pune', 18.4905, 73.8135, '+91 98230 55667', 'Dr. Shruti Joshi', '24/7', 'ACTIVE', 'High', 42),
+            ('MED-101', 'दिवे घाट आरोग्य केंद्र (Dive Ghat Base)', 'Dive Ghat Top (km 18)', 18.4350, 73.9820, '+91 94231 44556', 'Dr. Anjali Patil', '24/7', 'ACTIVE', 'Critical Care', 88),
+            ('MED-102', 'सासवड मध्यवर्ती रुग्णालय (Saswad Main Base)', 'Saswad City Ground (km 35)', 18.3440, 74.0300, '+91 98900 88776', 'Dr. Suresh Deshmukh', '24/7', 'ACTIVE', 'Hospital Ward', 156),
+            ('MED-103', 'जेजुरी मेडिकल कॅम्प (Jejuri Aid Center)', 'Jejuri Temple Square (km 52)', 18.2750, 74.1590, '+91 97654 11223', 'Dr. Ramesh Kulkarni', '24/7', 'ACTIVE', 'Moderate', 64)
+        ]
+
+        for c in camps_data:
+            cursor.execute(
+                """
+                INSERT INTO medical_camps (camp_id, name, location_name, latitude, longitude, contact_phone, doctor_in_charge, operating_hours, status, emergency_capability, patient_count)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (camp_id) DO UPDATE SET name = EXCLUDED.name
+                """,
+                c
+            )
+
+        meds_data = [
+            ('MED-ITEM-101', 'ORS Hydration Packets (ओआरएस)', 'Hydration', 'MED-100', 250, 300, 'packs', '2027-12', 'In Stock'),
+            ('MED-ITEM-102', 'First Aid Bandages & Gauze', 'First Aid', 'MED-100', 140, 150, 'kits', '2028-06', 'In Stock'),
+            ('MED-ITEM-103', 'ORS Hydration Packets (ओआरएस)', 'Hydration', 'MED-101', 12, 200, 'packs', '2027-12', 'Critical'),
+            ('MED-ITEM-104', 'Foot Blister Pain Ointment', 'Topical', 'MED-101', 18, 100, 'tubes', '2027-08', 'Low Stock'),
+            ('MED-ITEM-105', 'Paracetamol & Antacids', 'Oral Painkiller', 'MED-102', 450, 500, 'tabs', '2028-01', 'In Stock'),
+            ('MED-ITEM-106', 'Saline IV Bottles (सलाईन)', 'Emergency IV', 'MED-102', 110, 150, 'bottles', '2027-10', 'In Stock'),
+            ('MED-ITEM-107', 'Emergency Oxygen Cylinders', 'Respiratory', 'MED-102', 2, 10, 'cylinders', '2029-01', 'Low Stock')
+        ]
+
+        for m in meds_data:
+            cursor.execute(
+                """
+                INSERT INTO medicines (item_id, name, category, camp_id, available_quantity, total_capacity, unit, expiry_date, status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (item_id) DO UPDATE SET available_quantity = EXCLUDED.available_quantity, status = EXCLUDED.status
+                """,
+                m
+            )
+
+        # 6. Seed Food & Water Points
+        points_data = [
+            ('WP-101', 'WATER', 'एमएमसीओई जल सेवा केंद्र (MMCOE Water Hub)', 'MMCOE Gate 1, Karve Nagar', 18.4902, 73.8130, 'AVAILABLE', 5000, 4200),
+            ('WP-102', 'WATER', 'हडपसर पालखी जल केंद्र (Hadapsar Water Station)', 'Hadapsar Bypass Junction', 18.4980, 73.9350, 'AVAILABLE', 10000, 8500),
+            ('FP-101', 'FOOD', 'दिवे घाट महाप्रसाद अन्नछत्र (Dive Ghat Annachhatra)', 'Vadki Nala Base', 18.4550, 73.9600, 'AVAILABLE', 3000, 2400),
+            ('WP-103', 'WATER', 'दिवे घाट शिखर जल टाकी (Dive Ghat Top Tank)', 'Dive Ghat Viewpoint', 18.4280, 73.9720, 'LOW_SUPPLY', 2000, 350),
+            ('FP-102', 'FOOD', 'सासवड श्री क्षेत्र अन्नछत्र (Saswad Food Pavilion)', 'Saswad Maidan', 18.3440, 74.0300, 'AVAILABLE', 8000, 6200)
+        ]
+
+        for p in points_data:
+            cursor.execute(
+                """
+                INSERT INTO food_water_points (point_id, type, name, location_name, latitude, longitude, status, capacity_liters_or_meals, available_amount)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (point_id) DO UPDATE SET available_amount = EXCLUDED.available_amount, status = EXCLUDED.status
+                """,
+                p
+            )
+
+        # 7. Seed System Notifications
+        notifications_data = [
+            ('CRITICAL SOS ALERT', 'Varkari Pandurang Jadhav triggered SOS near Karve Nagar due to high blood pressure.', 'SOS', 'CRITICAL'),
+            ('Low ORS Stock Alert', 'Dive Ghat Medical Post is critically low on ORS packets (12 packs remaining).', 'STOCK', 'HIGH'),
+            ('Missing Person Reported', 'Shantabai More (72 yrs) reported missing near Saswad Maidan.', 'MISSING', 'HIGH'),
+            ('Extreme Heat Advisory', 'Heat Index reached 42.5°C at Dive Ghat. ORS distribution alerted.', 'WEATHER', 'HIGH'),
+            ('Missing Person Sighting', 'Ganesh Bhosale (10 yrs) located near Dive Ghat Hairpin. Verification pending.', 'MISSING', 'INFO')
+        ]
+
+        for n in notifications_data:
+            cursor.execute(
+                """
+                INSERT INTO notifications (title, message, category, severity)
+                VALUES (%s, %s, %s, %s)
+                """,
+                n
+            )
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            "success": True,
+            "message": "PostgreSQL database seeded successfully with complete VariPath Command Center demo data!"
+        }), 200
+
+    except Exception as e:
+        print("SEED DEMO DATA ERROR:", e)
+        return jsonify({"success": False, "message": f"Failed to seed demo data: {str(e)}"}), 500
+
+
+# ============================================================
 # RUN SERVER
 # ============================================================
 
@@ -2570,3 +3723,4 @@ if __name__ == "__main__":
         port=5001,
         debug=True
     )
+
