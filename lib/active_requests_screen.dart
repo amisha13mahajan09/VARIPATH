@@ -677,6 +677,35 @@ class _ActiveRequestsScreenState
             ],
           ),
 
+          if (request['location_code'] != null && request['location_code'].toString().isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: Colors.blue.withOpacity(0.08),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.blue.withOpacity(0.2)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.pin_drop_rounded, color: Colors.blue, size: 16),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      'Vaaripath Code: ${request['location_code']}${request['location_name'] != null ? ' (${request['location_name']})' : ''}',
+                      style: const TextStyle(
+                        fontFamily: 'Lexend',
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w600,
+                        color: blue,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+
           const SizedBox(height: 18),
 
           SizedBox(

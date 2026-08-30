@@ -73,6 +73,31 @@ def init_db():
             );
         """)
 
+        # 2b. Vaaripath Location Codes table (for Keypad / Landmark SOS)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS vaaripath_location_codes (
+                id SERIAL PRIMARY KEY,
+                location_code VARCHAR(20) UNIQUE NOT NULL,
+                name VARCHAR(100) NOT NULL,
+                latitude DOUBLE PRECISION NOT NULL,
+                longitude DOUBLE PRECISION NOT NULL,
+                description TEXT,
+                active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+
+        # Seed genuine predefined route landmark coordinates from VariRouteData / MapScreen
+        cursor.execute("""
+            INSERT INTO vaaripath_location_codes (location_code, name, latitude, longitude, description) VALUES
+            ('VP-001', 'MMCOE Medical Base Camp', 18.4905, 73.8135, 'MMCOE Campus, Karve Nagar, Pune'),
+            ('VP-028', 'Pargao Medical Rest Camp', 18.3900, 74.0050, 'Pargao Rest Stop (km 28)'),
+            ('VP-037', 'Dive Ghat Medical Station', 18.4350, 73.9820, 'Dive Ghat Top Base (km 18)'),
+            ('VP-050', 'Saswad Main Hospital Base', 18.3440, 74.0300, 'Saswad City Ground (km 35)'),
+            ('VP-100', 'Wakhari Pandharpur Medical Post', 17.8200, 75.1200, 'Wakhari Pandharpur Border (km 190)')
+            ON CONFLICT (location_code) DO NOTHING;
+        """)
+
         cursor.execute("""
             ALTER TABLE users
             ALTER COLUMN username TYPE VARCHAR(50),
@@ -85,6 +110,8 @@ def init_db():
             ADD COLUMN IF NOT EXISTS problem_description TEXT,
             ADD COLUMN IF NOT EXISTS assigned_volunteer_username VARCHAR(50),
             ADD COLUMN IF NOT EXISTS call_sid VARCHAR(100),
+            ADD COLUMN IF NOT EXISTS location_code VARCHAR(20),
+            ADD COLUMN IF NOT EXISTS location_source VARCHAR(30) DEFAULT 'GPS',
             ADD COLUMN IF NOT EXISTS volunteer_done BOOLEAN DEFAULT FALSE,
             ADD COLUMN IF NOT EXISTS varkari_reached BOOLEAN DEFAULT FALSE,
             ADD COLUMN IF NOT EXISTS declined_volunteers TEXT[] DEFAULT '{}';
@@ -987,7 +1014,8 @@ def exotel_incoming_call():
     Parameters handled:
       - CallSid: Unique call identifier (used for duplicate protection)
       - CallFrom / From: Caller's phone number
-      - digits / Digits: Selected DTMF digit (1, 2, or 3)
+      - digits / Digits: DTMF digits (Emergency type 1/2/3 OR 3-digit Location Code like 037)
+      - category / emergency_type: Explicit DTMF category (1, 2, or 3) when chained with Gather 2
     """
     try:
         # 1. Collect parameters from GET query string, POST form, or JSON
@@ -1013,8 +1041,11 @@ def exotel_incoming_call():
         raw_phone_digits = re.sub(r"\D", "", str(raw_call_from))
         clean_phone = raw_phone_digits[-10:] if len(raw_phone_digits) >= 10 else ""
 
-        # 4. Extract & normalize digits (strips quotes, spaces)
-        raw_digits = params.get("digits") or params.get("Digits") or ""
+        # 4. Extract & normalize category and digits/location code
+        raw_category = params.get("category") or params.get("emergency_type") or ""
+        clean_category = str(raw_category).strip().strip("'").strip('"').strip()
+
+        raw_digits = params.get("digits") or params.get("Digits") or params.get("location_code") or ""
         clean_digits = str(raw_digits).strip().strip("'").strip('"').strip()
 
         # 5. Validations
@@ -1030,14 +1061,30 @@ def exotel_incoming_call():
                 "message": f"Valid 10-digit caller phone number (CallFrom) is required. Received: '{raw_call_from}'."
             }), 400
 
-        if clean_digits not in ["1", "2", "3"]:
+        # Determine emergency category and location digits:
+        # Scenario A: Explicit category passed via URL query parameter (e.g. category=1, digits=037)
+        # Scenario B: Standard single-digit smartphone flow (digits=1, category not provided)
+        # Scenario C: 3-digit code entered in digits without category (defaults to Medical Assist '1')
+        emergency_digit = ""
+        location_digits = ""
+
+        if clean_category in ["1", "2", "3"]:
+            emergency_digit = clean_category
+            location_digits = clean_digits if clean_digits != clean_category else ""
+        elif clean_digits in ["1", "2", "3"] and not clean_category:
+            emergency_digit = clean_digits
+            location_digits = ""
+        elif len(clean_digits) == 3 and clean_digits.isdigit():
+            emergency_digit = "1"  # Default to Medical Assist
+            location_digits = clean_digits
+        else:
             return jsonify({
                 "success": False,
-                "message": f"Invalid or missing DTMF digits: '{clean_digits}'. Accepted values are '1', '2', or '3'."
+                "message": f"Invalid or missing emergency category: category='{clean_category}', digits='{clean_digits}'. Accepted categories are '1', '2', or '3'."
             }), 400
 
         # Map DTMF to emergency category
-        problem_description = DTMF_CATEGORY_MAP.get(clean_digits, "General SOS: IVR Call")
+        problem_description = DTMF_CATEGORY_MAP.get(emergency_digit, "General SOS: IVR Call")
 
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -1045,7 +1092,7 @@ def exotel_incoming_call():
         # 6. Duplicate Protection: Check if CallSid was already processed
         cursor.execute(
             """
-            SELECT id, request_code, problem_description, status, created_at
+            SELECT id, request_code, problem_description, status, latitude, longitude, location_code, location_source, created_at
             FROM assistance_requests
             WHERE call_sid = %s
             LIMIT 1
@@ -1063,6 +1110,10 @@ def exotel_incoming_call():
                 "request_id": existing_call["id"],
                 "request_code": existing_call["request_code"],
                 "status": existing_call["status"],
+                "latitude": existing_call["latitude"],
+                "longitude": existing_call["longitude"],
+                "location_code": existing_call.get("location_code"),
+                "location_source": existing_call.get("location_source"),
                 "message": "CallSid already processed."
             }), 200
 
@@ -1117,24 +1168,94 @@ def exotel_incoming_call():
             varkari_username = guest_username
             varkari_name = f"IVR Caller {clean_phone}"
 
-        # 8. Location lookup (ONLY genuine existing user location, no fabricated GPS)
-        cursor.execute(
-            """
-            SELECT latitude, longitude
-            FROM user_locations
-            WHERE username = %s
-            ORDER BY updated_at DESC
-            LIMIT 1
-            """,
-            (varkari_username,)
-        )
-        user_loc = cursor.fetchone()
+        # 8. Location Resolution & Routing Logic:
+        # -------------------------------------------------------------
+        # SCENARIO A: Location code provided (Gather 2 - Keypad Flow)
+        # -------------------------------------------------------------
+        if location_digits and len(location_digits) >= 1:
+            location_code = None
+            location_source = "UNAVAILABLE"
+            latitude = None
+            longitude = None
 
-        latitude = None
-        longitude = None
-        if user_loc and user_loc.get("latitude") is not None and user_loc.get("longitude") is not None:
-            latitude = user_loc["latitude"]
-            longitude = user_loc["longitude"]
+            clean_code = location_digits.upper()
+            formatted_code = f"VP-{clean_code.zfill(3)}" if clean_code.isdigit() else clean_code
+
+            # Use EXACT requested SQL lookup:
+            cursor.execute(
+                """
+                SELECT location_code, name, latitude, longitude
+                FROM vaaripath_location_codes
+                WHERE (location_code = %s OR location_code = %s)
+                  AND active = TRUE
+                LIMIT 1
+                """,
+                (clean_code, formatted_code)
+            )
+            loc_record = cursor.fetchone()
+            if loc_record:
+                location_code = loc_record["location_code"]
+                latitude = loc_record["latitude"]
+                longitude = loc_record["longitude"]
+                location_source = "VAARIPATH_CODE"
+                print(f"[EXOTEL WEBHOOK] Keypad Location Resolved: '{clean_code}' -> {location_code} ({loc_record['name']}) at ({latitude}, {longitude})")
+            else:
+                # Invalid location code -> fallback to user GPS if available, else UNAVAILABLE
+                if user_record:
+                    cursor.execute(
+                        """
+                        SELECT latitude, longitude
+                        FROM user_locations
+                        WHERE username = %s
+                        ORDER BY updated_at DESC
+                        LIMIT 1
+                        """,
+                        (varkari_username,)
+                    )
+                    user_loc = cursor.fetchone()
+                    if user_loc and user_loc.get("latitude") is not None and user_loc.get("longitude") is not None:
+                        latitude = user_loc["latitude"]
+                        longitude = user_loc["longitude"]
+                        location_source = "GPS"
+
+        # -------------------------------------------------------------
+        # SCENARIO B: No location code provided (Router Passthru 1 Stage)
+        # -------------------------------------------------------------
+        else:
+            # Check if caller has an active, recent GPS fix in user_locations
+            user_loc = None
+            if user_record:
+                cursor.execute(
+                    """
+                    SELECT latitude, longitude
+                    FROM user_locations
+                    WHERE username = %s
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                    """,
+                    (varkari_username,)
+                )
+                user_loc = cursor.fetchone()
+
+            if user_loc and user_loc.get("latitude") is not None and user_loc.get("longitude") is not None:
+                # Registered user WITH active GPS -> Create SOS immediately
+                latitude = user_loc["latitude"]
+                longitude = user_loc["longitude"]
+                location_code = None
+                location_source = "GPS"
+                print(f"[EXOTEL WEBHOOK] Smartphone User '{varkari_username}' verified with GPS ({latitude}, {longitude}). Creating immediate SOS.")
+            else:
+                # Unknown user OR registered user WITHOUT GPS -> Route to Location Code Gather
+                cursor.close()
+                conn.close()
+                print(f"[EXOTEL WEBHOOK] Caller '{clean_phone}' has NO active GPS. Returning 404 to route into Location Code Gather.")
+                return jsonify({
+                    "success": False,
+                    "route": "REQUIRE_LOCATION_CODE",
+                    "caller_phone": clean_phone,
+                    "category": emergency_digit,
+                    "message": "No active GPS session found. Exotel Passthru failure branch will prompt for 3-digit location code."
+                }), 404
 
         # 9. Generate Request Code (high resolution to ensure uniqueness)
         request_code = "REQ-EXO-" + datetime.now().strftime("%Y%m%d%H%M%S%f")
@@ -1149,11 +1270,13 @@ def exotel_incoming_call():
                 problem_description,
                 latitude,
                 longitude,
+                location_code,
+                location_source,
                 status,
                 assigned_volunteer_username,
                 call_sid
             ) VALUES (
-                %s, %s, %s, %s, %s, %s, 'PENDING', NULL, %s
+                %s, %s, %s, %s, %s, %s, %s, %s, 'PENDING', NULL, %s
             )
             RETURNING id, request_code, created_at
             """,
@@ -1164,6 +1287,8 @@ def exotel_incoming_call():
                 problem_description,
                 latitude,
                 longitude,
+                location_code,
+                location_source,
                 call_sid
             )
         )
@@ -1173,7 +1298,7 @@ def exotel_incoming_call():
         cursor.close()
         conn.close()
 
-        print(f"[EXOTEL WEBHOOK] Created SOS request: ID={new_request['id']}, Code={new_request['request_code']}, Phone={clean_phone}, DTMF={clean_digits}")
+        print(f"[EXOTEL WEBHOOK] Created SOS request: ID={new_request['id']}, Code={new_request['request_code']}, Phone={clean_phone}, Category={emergency_digit}, LocCode={location_code}, Source={location_source}")
 
         return jsonify({
             "success": True,
@@ -1186,6 +1311,8 @@ def exotel_incoming_call():
             "status": "PENDING",
             "latitude": latitude,
             "longitude": longitude,
+            "location_code": location_code,
+            "location_source": location_source,
             "message": "IVR SOS request created successfully."
         }), 200
 
@@ -1407,6 +1534,9 @@ def get_volunteer_requests(username):
                 ar.status,
                 ar.latitude as varkari_latitude,
                 ar.longitude as varkari_longitude,
+                ar.location_code,
+                ar.location_source,
+                vlc.name as location_name,
                 ar.assigned_volunteer_username,
                 ar.volunteer_done,
                 ar.varkari_reached,
@@ -1426,6 +1556,9 @@ def get_volunteer_requests(username):
             JOIN users u
                 ON ar.varkari_username =
                    u.username
+
+            LEFT JOIN vaaripath_location_codes vlc
+                ON ar.location_code = vlc.location_code
 
             LEFT JOIN volunteer_locations vl
                 ON ar.assigned_volunteer_username = vl.volunteer_username
