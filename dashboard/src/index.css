@@ -1,7 +1,7 @@
 :root {
   --bg-app: #F8FAFC;
-  --bg-card: #FFFFFF;
-  --border-subtle: #E2E8F0;
+  --bg-card: rgba(255, 255, 255, 0.65);
+  --border-subtle: rgba(226, 232, 240, 0.8);
   --text-main: #0F172A;
   --text-muted: #64748B;
   --accent-orange: #EA580C;
@@ -13,7 +13,12 @@ body {
   margin: 0;
   padding: 0;
   font-family: var(--font-main);
-  background-color: var(--bg-app);
+  background-color: #F8FAFC;
+  background-image: 
+    radial-gradient(at 0% 0%, rgba(249, 115, 22, 0.07) 0px, transparent 50%),
+    radial-gradient(at 100% 0%, rgba(234, 88, 12, 0.05) 0px, transparent 50%),
+    radial-gradient(at 50% 100%, rgba(99, 102, 241, 0.04) 0px, transparent 50%);
+  background-attachment: fixed;
   color: var(--text-main);
   overflow-x: hidden;
 }
@@ -24,7 +29,7 @@ body {
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: #F1F5F9;
+  background: rgba(241, 245, 249, 0.5);
 }
 ::-webkit-scrollbar-thumb {
   background: #CBD5E1;
@@ -34,26 +39,40 @@ body {
   background: #94A3B8;
 }
 
-/* Clean UI Cards & Panels */
-.clean-card {
-  background-color: #FFFFFF !important;
-  border: 1px solid #E2E8F0 !important;
-  border-radius: 14px !important;
-  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05), 0 1px 2px -1px rgba(0, 0, 0, 0.05) !important;
+/* Glassmorphic Translucent Cards & Panels (Boxes on Dashboard) */
+.clean-card,
+.clean-card-interactive,
+[class*="clean-card"] {
+  background-color: rgba(255, 255, 255, 0.65) !important;
+  backdrop-filter: blur(16px) saturate(180%) !important;
+  -webkit-backdrop-filter: blur(16px) saturate(180%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.6) !important;
+  border-radius: 16px !important;
+  box-shadow: 
+    0 10px 30px -10px rgba(15, 23, 42, 0.05),
+    0 4px 12px -2px rgba(15, 23, 42, 0.02),
+    inset 0 1px 1px 0 rgba(255, 255, 255, 0.9) !important;
 }
 
 .clean-card-interactive {
-  background-color: #FFFFFF !important;
-  border: 1px solid #E2E8F0 !important;
-  border-radius: 14px !important;
-  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05), 0 1px 2px -1px rgba(0, 0, 0, 0.05) !important;
-  transition: all 0.2s ease-in-out !important;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1) !important;
 }
 
 .clean-card-interactive:hover {
-  border-color: #CBD5E1 !important;
-  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.08), 0 4px 6px -4px rgba(0, 0, 0, 0.04) !important;
-  transform: translateY(-2px) !important;
+  background-color: rgba(255, 255, 255, 0.85) !important;
+  border-color: rgba(234, 88, 12, 0.4) !important;
+  box-shadow: 
+    0 20px 40px -12px rgba(234, 88, 12, 0.15),
+    0 8px 16px -4px rgba(15, 23, 42, 0.05),
+    inset 0 1px 1px 0 rgba(255, 255, 255, 1) !important;
+  transform: translateY(-3px) !important;
+}
+
+/* Translucent nested blocks inside cards */
+.clean-card .bg-slate-50,
+.clean-card-interactive .bg-slate-50 {
+  background-color: rgba(241, 245, 249, 0.55) !important;
+  backdrop-filter: blur(8px) !important;
 }
 
 /* Leaflet Map Light Styling */
@@ -65,15 +84,17 @@ body {
 }
 
 .leaflet-popup-content-wrapper {
-  background: #FFFFFF !important;
+  background: rgba(255, 255, 255, 0.88) !important;
+  backdrop-filter: blur(12px) !important;
+  -webkit-backdrop-filter: blur(12px) !important;
   color: #0F172A !important;
-  border: 1px solid #E2E8F0 !important;
-  border-radius: 10px !important;
-  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1) !important;
+  border: 1px solid rgba(226, 232, 240, 0.8) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1) !important;
 }
 
 .leaflet-popup-tip {
-  background: #FFFFFF !important;
+  background: rgba(255, 255, 255, 0.88) !important;
 }
 
 .font-marathi {

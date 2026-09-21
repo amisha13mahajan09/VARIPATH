@@ -18,7 +18,7 @@ DB_CONFIG = {
     "port": 5432,
     "database": "varipath",
     "user": "postgres",
-    "password": "12345"
+    "password": "139Virgo"
 }
 
 

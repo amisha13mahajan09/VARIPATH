@@ -14,3 +14,7 @@ backend/__pycache__/
 __pycache__/
 *.pyc
 .DS_Store
+backend/venv/
+dashboard/node_modules/
+.env
+.env.*

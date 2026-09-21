@@ -29,7 +29,7 @@ function ProtectedLayout() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex">
+    <div className="min-h-screen bg-gradient-to-br from-slate-100 via-orange-50/30 to-slate-200/60 text-slate-900 flex relative">
       {/* Sidebar Navigation */}
       <Sidebar />
 
