@@ -124,7 +124,6 @@ The alert is then displayed on the organiser dashboard and can be forwarded to t
 | Weather | OpenWeatherMap API |
 | IVR & Calling | Exotel |
 | Speech-to-Text | Sarvam AI / OpenAI Whisper |
-| Notifications | Firebase FCM / Twilio SMS |
 | Communication | REST APIs |
 
 ## Innovation
@@ -201,7 +200,7 @@ VariPath aims to create a connected safety network for the Wari pilgrimage where
 
 **वारीपथ — Because every Varkari deserves to walk safely.**
 
-## Author
+## Authors
 
 **Amisha Mahajan**
 
